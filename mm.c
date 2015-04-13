@@ -48,6 +48,8 @@ team_t team = {
 #define BLOCK_SIZE sizeof(struct s_block)
 
 
+#define NUM_FREELIST 10
+
 // From Computer Systems (p. 830)
 #define WSIZE     4       /* Word size in bytes */
 #define DSIZE     8       /* Double word size in bytes */
@@ -139,8 +141,6 @@ static void *coalesce(void *ptr);
 static void place(void *ptr, size_t asize);
 
 // Helper methods from 1st implementation
-static void *coalesce(void *ptr);
-static void place(void *ptr, size_t asize);
 static void insert_node(void *ptr, size_t size);
 static void delete_node(void *ptr);
 
@@ -151,7 +151,7 @@ static void mm_check(char caller, void *ptr, int size);
  */
 int mm_init(void) {
     // book implementation (p. 830)
-    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) // heap_listp is undeclared.. ref. p. 834 for help
+    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
         return -1;
     PUT(heap_listp, 0);                             // Alignment Padding
     PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));  // Prologue Header
@@ -186,9 +186,30 @@ static void *extend_heap(size_t words) {
     return coalesce(ptr);
 }
 
+/* 
+ * mm_malloc - Performs a first-fit search of the implicit free list.
+ */
+/*
 void *find_fit(size_t asize) {
-
+    // dbg_printf("FINDING FIT: ");
+    void *bp;
+    int class = getclass(asize);
+    for (int i = class; i < NUM_FREELIST; i++) {
+        void *root = getroot(i);
+        // first fit search 
+        for (bp = next_free_blck(root); bp != NULL; bp = next_free_blck(bp)) {
+            dbg_printf(" %lx > ", (long)bp);
+            if (asize <= GET_SIZE(HDRP(bp))) {
+                dbg_printf("FOUND!\n");
+                return bp;
+            }
+        }
+    }
+    
+    // dbg_printf("NOT FOUND :(\n");
+    return NULL; // no fit 
 }
+*/
 
 /* 
  * mm_malloc - Allocate a block by incrementing the brk pointer.
@@ -206,16 +227,18 @@ void *mm_malloc(size_t size) {
     if (size == 0)
         return NULL;
 
-    /* Adjust block size to include overhead and alignment reqs. */
+    /*
+    // Adjust block size to include overhead and alignment reqs.
     if (size <= DSIZE)
         asize = 2 * DSIZE;
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+    */
 
-    /* Search the free list for a fit */
+    // Search the free list for a fit
+    asize = MAX(ALIGN(size + SIZE_T_SIZE), MINSIZE);
 
-
-    /* No fit found. Get more memory and place the block */
+    // No fit found. Get more memory and place the block
     extendsize = MAX(asize, CHUNKSIZE);
     if ((ptr = extend_heap(extendsize/WSIZE)) == NULL)
         return NULL;
@@ -243,7 +266,112 @@ void *mm_malloc(size_t size) {
  * the minimum block size.
  */
 void place(void *ptr, size_t asize) {
+    size_t ptr_size = GET_SIZE(HEAD(ptr));
+    size_t remainder = ptr_size - asize;
 
+    // Remove block from segregated list 
+    // delete_node(ptr);
+
+    //
+    if (remainder >= MINSIZE) {
+        // Split block 
+        PUT(HEAD(ptr), PACK(asize, 1)); // Block header
+        PUT(FOOT(ptr), PACK(asize, 1)); // Block footer
+        PUT_NOTAG(HEAD(NEXT(ptr)), PACK(remainder, 0)); // Next header
+        PUT_NOTAG(FOOT(NEXT(ptr)), PACK(remainder, 0)); // Next footer
+        insert_node(NEXT(ptr), remainder);
+    } else {
+        // Do not split block
+        PUT(HEAD(ptr), PACK(ptr_size, 1)); // Block header
+        PUT(FOOT(ptr), PACK(ptr_size, 1)); // Block footer
+    }
+    return;
+}
+
+/*
+ * insert - for segragated list
+ */
+void insert_node(void *ptr, size_t size) {
+    int list = 0;
+    void *search_ptr = ptr;
+    void *insert_ptr = NULL;
+
+    // Select segregated list
+    while ((list < LISTS - 1) && (size > 1)) {
+        size >>= 1;
+        list++;
+    }
+
+    /* Select location on list to insert pointer while keeping list
+     organized by byte size in ascending order. */
+    search_ptr = free_lists[list];
+    while ((search_ptr != NULL) && (size > GET_SIZE(HEAD(search_ptr)))) {
+        insert_ptr = search_ptr;
+        search_ptr = PRED(search_ptr);
+    }
+
+    // Set predecessor and successor 
+    if (search_ptr != NULL) {
+        if (insert_ptr != NULL) {
+            SET_PTR(PRED_PTR(ptr), search_ptr); 
+            SET_PTR(SUCC_PTR(search_ptr), ptr);
+            SET_PTR(SUCC_PTR(ptr), insert_ptr);
+            SET_PTR(PRED_PTR(insert_ptr), ptr);
+        } else {
+            SET_PTR(PRED_PTR(ptr), search_ptr); 
+            SET_PTR(SUCC_PTR(search_ptr), ptr);
+            SET_PTR(SUCC_PTR(ptr), NULL);
+
+            // Add block to appropriate list
+            free_lists[list] = ptr;
+        }
+    } else {
+        if (insert_ptr != NULL) {
+            SET_PTR(PRED_PTR(ptr), NULL);
+            SET_PTR(SUCC_PTR(ptr), insert_ptr);
+            SET_PTR(PRED_PTR(insert_ptr), ptr);
+        } else {
+            SET_PTR(PRED_PTR(ptr), NULL);
+            SET_PTR(SUCC_PTR(ptr), NULL);
+
+            // Add block to appropriate list
+            free_lists[list] = ptr;
+        }
+    }
+
+    return;
+}
+
+/*
+ * delete - for segragated list
+ */
+void delete_node(void *ptr) {
+    int list = 0;
+    size_t size = GET_SIZE(HEAD(ptr));
+
+    // Select segregated list
+    while ((list < LISTS - 1) && (size > 1)) {
+        size >>= 1;
+        list++;
+    }
+
+    if (PRED(ptr) != NULL) {
+        if (SUCC(ptr) != NULL) {
+            SET_PTR(SUCC_PTR(PRED(ptr)), SUCC(ptr));
+            SET_PTR(PRED_PTR(SUCC(ptr)), PRED(ptr));
+        } else {
+            SET_PTR(SUCC_PTR(PRED(ptr)), NULL);
+            free_lists[list] = PRED(ptr);
+        }
+    } else {
+        if (SUCC(ptr) != NULL) {
+            SET_PTR(PRED_PTR(SUCC(ptr)), NULL);
+        } else {
+            free_lists[list] = NULL;
+        }
+    }
+
+    return;
 }
 
 /*
