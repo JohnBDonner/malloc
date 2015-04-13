@@ -35,6 +35,7 @@ team_t team = {
     "lcurtis2@u.rochester.edu"
 };
 
+// Given at start
 /* 16 byte alignment */
 #define ALIGNMENT 16
 
@@ -46,6 +47,8 @@ team_t team = {
 /* Extend heap */
 #define BLOCK_SIZE sizeof(struct s_block)
 
+
+// From Computer Systems (p. 830)
 #define WSIZE     4       /* Word size in bytes */
 #define DSIZE     8       /* Double word size in bytes */
 #define CHUNKSIZE (1<<12) /* Page size in bytes */
@@ -63,7 +66,7 @@ team_t team = {
 /* Read and write a word at address p */
 #define GET(p)            (*(unsigned int *)(p))
 // Preserve reallocation bit
-#define PUT(p, val)       (*(unsigned int *)(p) = (val) | GET_TAG(p))
+#define PUT(p, val)       (*(unsigned int *)(p) = (val) | GET_TAG(p)) // 2015-04-14-15:16 book doesn't have '| GET_TAG(p)'
 // Clear reallocation bit
 #define PUT_NOTAG(p, val) (*(unsigned int *)(p) = (val))
 
@@ -87,6 +90,7 @@ team_t team = {
 #define NEXT(ptr) ((char *)(ptr) + GET_SIZE((char *)(ptr) - WSIZE))
 #define PREV(ptr) ((char *)(ptr) - GET_SIZE((char *)(ptr) - DSIZE))
 
+// 1st implementation
 /* Address of free block's predecessor and successor entries */
 #define PRED_PTR(ptr) ((char *)(ptr))
 #define SUCC_PTR(ptr) ((char *)(ptr) + WSIZE)
@@ -110,6 +114,7 @@ team_t team = {
 
 /* Global Variable */
 void *base = NULL;
+static char *heap_listp;
 void *free_lists[LISTS]; /* Array of pointers to segregated free lists */
 char *prologue_block;    /* Pointer to prologue block */
 
@@ -128,7 +133,12 @@ struct s_block {
 };
 
 /* helper methods */
-static void *extend_heap(size_t size);
+static void *extend_heap(size_t words);
+static void *find_fit(size_t asize);
+static void *coalesce(void *ptr);
+static void place(void *ptr, size_t asize);
+
+// Helper methods from 1st implementation
 static void *coalesce(void *ptr);
 static void place(void *ptr, size_t asize);
 static void insert_node(void *ptr, size_t size);
@@ -140,7 +150,44 @@ static void mm_check(char caller, void *ptr, int size);
  * mm_init - initialize the malloc package.
  */
 int mm_init(void) {
+    // book implementation (p. 830)
+    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) // heap_listp is undeclared.. ref. p. 834 for help
+        return -1;
+    PUT(heap_listp, 0);                             // Alignment Padding
+    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));  // Prologue Header
+    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));  // Prologue Footer
+    PUT(heap_listp + (3 * WSIZE), PACK(DSIZE, 1));  // Epilogue Header
+
+    /* Extend the empty heap with a free block of CHUNKSIZE bytes */
+    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+        return -1;
     return 0;
+}
+
+/* 
+ * extend_heap - Allocate a block by incrementing the brk pointer.
+ *     Always allocate a block whose size is a multiple of the alignment.
+ */
+static void *extend_heap(size_t words) {
+    char *ptr;
+    size_t size;
+
+    /* Allocate an even number of words to maintain alignment */
+    size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+    if ((long)(ptr = mem_sbrk(size)) == -1)
+        return NULL;
+
+    /* Initialize free block header/footer and the epilogue header */
+    PUT(HEAD(ptr), PACK(size, 0)); // Free head block
+    PUT(FOOT(ptr), PACK(size, 0)); // Free foot block
+    PUT(HEAD(NEXT(ptr)), PACK(0, 1)); // New epilogue header
+
+    /* Coalesce if the previous block was free */
+    return coalesce(ptr);
+}
+
+void *find_fit(size_t asize) {
+
 }
 
 /* 
@@ -149,26 +196,94 @@ int mm_init(void) {
  */
 void *mm_malloc(size_t size) {
     int newsize = ALIGN(size + SIZE_T_SIZE);
-    void *ptr = NULL;  /* Pointer */
+    // void *ptr = NULL;  /* Pointer */
+    char *ptr; // Pointer
     void *p = mem_sbrk(newsize);
     size_t checksize = size; // Copy of request size (for use with mm_check)
+    size_t asize, // adjusted block size
+        extendsize; // amount to extend heap if no fit
 
+    if (size == 0)
+        return NULL;
+
+    /* Adjust block size to include overhead and alignment reqs. */
+    if (size <= DSIZE)
+        asize = 2 * DSIZE;
+    else
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+
+    /* Search the free list for a fit */
+
+
+    /* No fit found. Get more memory and place the block */
+    extendsize = MAX(asize, CHUNKSIZE);
+    if ((ptr = extend_heap(extendsize/WSIZE)) == NULL)
+        return NULL;
+    place(ptr, asize);
+    return ptr;
+
+    // Checks
     if (CHECK && CHECK_MALLOC) {
         mm_check('a', ptr, checksize);
     }
 
+    /* original implementation
     if (p == (void *)-1) {
         return NULL;
     } else {
         *(size_t *)p = size;
         return (void *)((char *)p + SIZE_T_SIZE);
     }
+    */
+}
+
+/*
+ * place - place the requested block at the beginning of the free block,
+ * splitting only if the size of the remainder would equal or exceed
+ * the minimum block size.
+ */
+void place(void *ptr, size_t asize) {
+
 }
 
 /*
  * mm_free - Freeing a block does nothing... for now.
  */
-void mm_free(void *ptr) { }
+void mm_free(void *ptr) {
+    size_t size = GET_SIZE(HEAD(ptr));
+
+    PUT(HEAD(ptr), PACK(size, 0));
+    PUT(FOOT(ptr), PACK(size, 0));
+    coalesce(ptr);
+}
+
+/*
+ * coalesce - used to merge a block with any adjacent free blocks in constant time.
+ */
+void *coalesce(void *ptr) {
+    size_t prev_alloc = GET_ALLOC(FOOT(PREV(ptr)));
+    size_t next_alloc = GET_ALLOC(HEAD(NEXT(ptr)));
+    size_t size = GET_SIZE(HEAD(ptr));
+
+    if (prev_alloc && next_alloc)               // case 1
+        return ptr;
+    else if (prev_alloc && !next_alloc) {       // case 2
+        size += GET_SIZE(HEAD(NEXT(ptr)));
+        PUT(HEAD(ptr), PACK(size, 0));
+        PUT(FOOT(ptr), PACK(size, 0));
+    } else if (!prev_alloc && next_alloc) {     // case 3
+        size += GET_SIZE(HEAD(PREV(ptr)));
+        PUT(FOOT(ptr), PACK(size, 0));
+        PUT(FOOT(PREV(ptr)), PACK(size, 0));
+        ptr = PREV(ptr);
+    } else {                                    // case 4
+        size += GET_SIZE(HEAD(PREV(ptr))) + GET_SIZE(FOOT(NEXT(ptr)));
+        PUT(HEAD(PREV(ptr)), PACK(size, 0));
+        PUT(FOOT(NEXT(ptr)), PACK(size, 0));
+        ptr = PREV(ptr);
+    }
+    return ptr;
+}
 
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
