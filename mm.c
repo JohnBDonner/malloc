@@ -54,7 +54,7 @@ team_t team = {
 #define WSIZE     4       /* Word size in bytes */
 #define DSIZE     16       /* Double word size in bytes */
 #define CHUNKSIZE (1<<12) /* Page size in bytes */
-#define MINSIZE   16      /* Minimum block size */
+#define MINSIZE   32      /* Minimum block size */
 
 #define LISTS     20      /* Number of segregated lists */
 #define BUFFER  (1<<7)    /* Reallocation buffer */
@@ -102,7 +102,7 @@ team_t team = {
 #define SUCC(ptr) (*(char **)(SUCC_PTR(ptr)))
 
 /* Settings for mm_check */
-#define CHECK         0 /* Kill bit: Set to 0 to disable checking
+#define CHECK         1 /* Kill bit: Set to 0 to disable checking
                            (Checking is currently disabled through comments) */
 #define CHECK_MALLOC  1 /* Check allocation operations */
 #define CHECK_FREE    1 /* Check free operations */
@@ -155,11 +155,15 @@ int mm_init(void) {
         return -1;
     PUT(heap_listp, 0);                             // Alignment Padding
     PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));  // Prologue Header
+    prologue_block = heap_listp + DSIZE;
     PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));  // Prologue Footer
     PUT(heap_listp + (3 * WSIZE), PACK(DSIZE, 1));  // Epilogue Header
 
+    line_count = LINE_OFFSET;
+    skip = 0;
+
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
-    printf("extend EMPTY heap [%d]\n", CHUNKSIZE/WSIZE);
+    // printf("extend EMPTY heap [%d]\n", CHUNKSIZE/WSIZE);
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
     return 0;
@@ -173,10 +177,10 @@ static void *extend_heap(size_t words) {
     char *ptr;
     size_t size;
 
-    printf("extending heap [%d]\n", words);
+    // printf("extending heap [%d]\n", words);
     /* Allocate an even number of words to maintain alignment */
     size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
-    printf("heapsize [%d]\n\n", size);
+    // printf("heapsize [%d]\n\n", size);
     if ((long)(ptr = mem_sbrk(size)) == -1)
         return NULL;
 
@@ -192,9 +196,18 @@ static void *extend_heap(size_t words) {
 /* 
  * mm_malloc - Performs a first-fit search of the implicit free list.m
  */
-/*
 void *find_fit(size_t asize) {
     // dbg_printf("FINDING FIT: ");
+    void *ptr;
+
+    for (ptr = heap_listp; GET_SIZE(HEAD(ptr)) > 0; ptr = NEXT(ptr)) {
+        if (!GET_ALLOC(HEAD(ptr)) && (asize <= GET_SIZE(HEAD(ptr)))) {
+            return ptr;
+        }
+    }
+    return NULL;
+
+    /*
     void *bp;
     int class = getclass(asize);
     for (int i = class; i < NUM_FREELIST; i++) {
@@ -211,8 +224,8 @@ void *find_fit(size_t asize) {
     
     // dbg_printf("NOT FOUND :(\n");
     return NULL; // no fit 
+    */
 }
-*/
 
 /* 
  * mm_malloc - Allocate a block by incrementing the brk pointer.
@@ -230,7 +243,7 @@ void *mm_malloc(size_t size) {
     //printf("ptr start: %d\n", ptr);
 
 
-    if (size == 0)
+    if (size <= 0)
         return NULL;
 
     
@@ -240,13 +253,13 @@ void *mm_malloc(size_t size) {
         // printf("2*dsize");
     } else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
-        //asize = DSIZE * ((ALIGN(size) + (DSIZE) + (DSIZE - 1)) / DSIZE);
-    //#define ALIGN(size) (((size) + (ALIGNMENT) -1) & ~(ALIGNMENT- 1))
 
     // Search the free list for a fit
     /*
     if ((ptr = find_fit(asize)) != NULL) {
+        printf("findingfit...");
         place(ptr, asize);
+        
         return ptr;
     }*/
     // asize = MAX(ALIGN(size + SIZE_T_SIZE), MINSIZE);
@@ -256,12 +269,12 @@ void *mm_malloc(size_t size) {
     if ((ptr = extend_heap(extendsize/WSIZE)) == NULL)
         return NULL;
     place(ptr, asize);
-    return ptr;
-
     // Checks
+    line_count++;
     if (CHECK && CHECK_MALLOC) {
         mm_check('a', ptr, checksize);
     }
+    return ptr;
 
     /* original implementation
     if (p == (void *)-1) {
@@ -279,14 +292,25 @@ void *mm_malloc(size_t size) {
  * the minimum block size.
  */
 void place(void *ptr, size_t asize) {
+    // printf("startingPLACE");
     size_t ptr_size = GET_SIZE(HEAD(ptr));
     size_t remainder = ptr_size - asize;
 
     // Remove block from segregated list 
     // delete_node(ptr);
 
-    PUT(HEAD(ptr), PACK(ptr_size, 1));
-    PUT(FOOT(ptr), PACK(ptr_size, 1));
+    // printf("ptr=[[%d]]", ptr);
+    // printf("NEXTptr=[[%d]]", NEXT(ptr));
+    if (remainder >= MINSIZE) {
+        PUT(HEAD(ptr), PACK(asize, 1));
+        PUT(FOOT(ptr), PACK(asize, 1));
+        ptr = NEXT(ptr);
+        PUT(HEAD(ptr), PACK(remainder, 0));
+        PUT(FOOT(ptr), PACK(remainder, 0));
+    } else {
+        PUT(HEAD(ptr), PACK(ptr_size, 1));
+        PUT(FOOT(ptr), PACK(ptr_size, 1));
+    }
 
     // splitting or not...
     /*
@@ -461,10 +485,13 @@ void *mm_realloc(void *ptr, size_t size) {
  */
 void mm_check(char caller, void* caller_ptr, int caller_size)
 {
-    printf("\nStart mm_check function....................");
     int size;  // Size of block
     int alloc; // Allocation bit
     char *ptr = prologue_block + DSIZE;
+    
+    printf("ptr=(%d)\n", ptr);
+    printf("HEAD(ptr)=(%d)\n", HEAD(ptr));
+    printf("GET_SIZE(HEAD(ptr))=(%d)\n", GET_SIZE(HEAD(ptr)));
     int block_count = 1;
     int count_size;
     int count_list;
@@ -477,9 +504,6 @@ void mm_check(char caller, void* caller_ptr, int caller_size)
     if (!skip) {
         printf("\n[%d] %c %d %d: Checking heap...\n", line_count, caller, caller_size, caller_loc);
     }
-
-    printf("\nmoop"); // debugging mm_check...
-    // 2015-04-13-00:18 -> this isn't currently being printed, and instead 'checking heap...' proceeds to seg fault
 
     while (1) {
         loc = ptr - prologue_block - DSIZE;
