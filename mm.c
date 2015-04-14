@@ -52,7 +52,7 @@ team_t team = {
 
 // From Computer Systems (p. 830)
 #define WSIZE     4       /* Word size in bytes */
-#define DSIZE     8       /* Double word size in bytes */
+#define DSIZE     16       /* Double word size in bytes */
 #define CHUNKSIZE (1<<12) /* Page size in bytes */
 #define MINSIZE   16      /* Minimum block size */
 
@@ -159,6 +159,7 @@ int mm_init(void) {
     PUT(heap_listp + (3 * WSIZE), PACK(DSIZE, 1));  // Epilogue Header
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
+    printf("extend EMPTY heap [%d]\n", CHUNKSIZE/WSIZE);
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
     return 0;
@@ -172,8 +173,10 @@ static void *extend_heap(size_t words) {
     char *ptr;
     size_t size;
 
+    printf("extending heap [%d]\n", words);
     /* Allocate an even number of words to maintain alignment */
     size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+    printf("heapsize [%d]\n\n", size);
     if ((long)(ptr = mem_sbrk(size)) == -1)
         return NULL;
 
@@ -187,7 +190,7 @@ static void *extend_heap(size_t words) {
 }
 
 /* 
- * mm_malloc - Performs a first-fit search of the implicit free list.
+ * mm_malloc - Performs a first-fit search of the implicit free list.m
  */
 /*
 void *find_fit(size_t asize) {
@@ -216,6 +219,7 @@ void *find_fit(size_t asize) {
  *     Always allocate a block whose size is a multiple of the alignment.
  */
 void *mm_malloc(size_t size) {
+    //printf("Starting malloc with size [%d]........\n", size);
     int newsize = ALIGN(size + SIZE_T_SIZE);
     // void *ptr = NULL;  /* Pointer */
     char *ptr; // Pointer
@@ -223,20 +227,29 @@ void *mm_malloc(size_t size) {
     size_t checksize = size; // Copy of request size (for use with mm_check)
     size_t asize, // adjusted block size
         extendsize; // amount to extend heap if no fit
+    //printf("ptr start: %d\n", ptr);
+
 
     if (size == 0)
         return NULL;
 
-    /*
+    
     // Adjust block size to include overhead and alignment reqs.
-    if (size <= DSIZE)
+    if (size <= DSIZE) {
         asize = 2 * DSIZE;
-    else
+        // printf("2*dsize");
+    } else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
-    */
+        //asize = DSIZE * ((ALIGN(size) + (DSIZE) + (DSIZE - 1)) / DSIZE);
+    //#define ALIGN(size) (((size) + (ALIGNMENT) -1) & ~(ALIGNMENT- 1))
 
     // Search the free list for a fit
-    asize = MAX(ALIGN(size + SIZE_T_SIZE), MINSIZE);
+    /*
+    if ((ptr = find_fit(asize)) != NULL) {
+        place(ptr, asize);
+        return ptr;
+    }*/
+    // asize = MAX(ALIGN(size + SIZE_T_SIZE), MINSIZE);
 
     // No fit found. Get more memory and place the block
     extendsize = MAX(asize, CHUNKSIZE);
@@ -272,7 +285,11 @@ void place(void *ptr, size_t asize) {
     // Remove block from segregated list 
     // delete_node(ptr);
 
-    //
+    PUT(HEAD(ptr), PACK(ptr_size, 1));
+    PUT(FOOT(ptr), PACK(ptr_size, 1));
+
+    // splitting or not...
+    /*
     if (remainder >= MINSIZE) {
         // Split block 
         PUT(HEAD(ptr), PACK(asize, 1)); // Block header
@@ -282,9 +299,11 @@ void place(void *ptr, size_t asize) {
         insert_node(NEXT(ptr), remainder);
     } else {
         // Do not split block
+        printf("don't split");
         PUT(HEAD(ptr), PACK(ptr_size, 1)); // Block header
         PUT(FOOT(ptr), PACK(ptr_size, 1)); // Block footer
     }
+    */
     return;
 }
 
